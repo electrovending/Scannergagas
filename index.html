@@ -1,0 +1,127 @@
+from flask import Flask, render_template_string
+from binance.client import Client
+import time
+
+app = Flask(__name__)
+
+variacion = 5  # Variacion en los últimos 30 minutos en porcentaje
+variacion_100 = 7  # Variacion en los últimos 30 minutos en porcentaje si tiene menos de 100k de volumen
+variacionfast = 2  # Variacion en los últimos 2 minutos en porcentaje
+
+client = Client('','', tld='com')
+
+@app.route('/')
+def index():
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Escaneo de Monedas</title>
+    </head>
+    <body>
+        <h1>Escaneo de Monedas</h1>
+        <div id="scan_results"></div>
+
+        <script>
+            function scanCoins() {
+                var xhr = new XMLHttpRequest();
+                xhr.open("GET", "/scan", true);
+                xhr.onreadystatechange = function() {
+                    if (xhr.readyState == 4 && xhr.status == 200) {
+                        document.getElementById("scan_results").innerHTML = xhr.responseText;
+                    }
+                };
+                xhr.send();
+            }
+
+            setInterval(scanCoins, 30000); // Escanear cada 30 segundos
+            scanCoins(); // Escanear al cargar la página
+        </script>
+    </body>
+    </html>
+    ''')
+
+@app.route('/scan')
+def scan():
+    ticks = buscarticks()
+    scan_result = ""
+    for tick in ticks:
+        klines = get_klines(tick)
+        knumber = len(klines)
+        if knumber > 0:
+            knumber = knumber - 1
+            scan_result += porcentaje_klines(tick, klines, knumber)
+    return scan_result
+
+def buscarticks():
+    ticks = []
+    lista_ticks = client.futures_symbol_ticker()
+    for tick in lista_ticks:
+        if tick['symbol'][-4:] == 'USDT':
+            ticks.append(tick['symbol'])
+    return ticks
+
+def get_klines(tick):
+    klines = client.futures_klines(symbol=tick, interval=Client.KLINE_INTERVAL_1MINUTE, limit=30)
+    return klines
+
+def infoticks(tick):
+    info = client.futures_ticker(symbol=tick)
+    return info
+
+def human_format(volumen):
+    magnitude = 0
+    while abs(volumen) >= 1000:
+        magnitude += 1
+        volumen /= 1000.0
+    return '%.2f%s' % (volumen, ['', 'K', 'M', 'G', 'T', 'P'][magnitude])
+
+def porcentaje_klines(tick, klines, knumber):
+    result_string = ""
+    inicial = float(klines[0][4])
+    final = float(klines[knumber][4])
+
+    if inicial > final:
+        result = round(((inicial - final) / inicial) * 100, 2)
+        if result >= variacion:
+            info = infoticks(tick)
+            volumen = float(info['quoteVolume'])
+            if volumen > 100000000 or result >= variacion_100:
+                result_string += 'LONG: ' + tick + '<br>'
+                result_string += 'Variacion: ' + str(result) + '%' + '<br>'
+                result_string += 'Volumen: ' + human_format(volumen) + '<br>'
+                result_string += 'Precio max: ' + info['highPrice'] + '<br>'
+                result_string += 'Precio min: ' + info['lowPrice'] + '<br><br>'
+
+    if final > inicial:
+        result = round(((final - inicial) / inicial) * 100, 2)
+        if result >= variacion:
+            info = infoticks(tick)
+            volumen = float(info['quoteVolume'])
+            if volumen > 100000000 or result >= variacion_100:
+                result_string += 'SHORT: ' + tick + '<br>'
+                result_string += 'Variacion: ' + str(result) + '%' + '<br>'
+                result_string += 'Volumen: ' + human_format(volumen) + '<br>'
+                result_string += 'Precio max: ' + info['highPrice'] + '<br>'
+                result_string += 'Precio min: ' + info['lowPrice'] + '<br><br>'
+
+    if knumber >= 3:
+        inicial = float(klines[knumber-2][4])
+        final = float(klines[knumber][4])
+        if inicial < final:
+            result = round(((final - inicial) / inicial) * 100, 2)
+            if result >= variacionfast:
+                info = infoticks(tick)
+                volumen = float(info['quoteVolume'])
+                result_string += 'FAST SHORT!: ' + tick + '<br>'
+                result_string += 'Variacion: ' + str(result) + '%' + '<br>'
+                result_string += 'Volumen: ' + human_format(volumen) + '<br>'
+                result_string += 'Precio max: ' + info['highPrice'] + '<br>'
+                result_string += 'Precio min: ' + info['lowPrice'] + '<br><br>'
+
+    return result_string
+
+if __name__ == '__main__':
+    app.run(debug=True)
